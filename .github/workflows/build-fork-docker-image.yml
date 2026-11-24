@@ -1,0 +1,71 @@
+name: 'Build and push my n8n image'
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Forks only. Upstream publishes its images through docker-build-push.yml.
+    if: github.repository != 'n8n-io/n8n'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The images copy native bindings from this build, so the host must use
+      # the same Node version as docker-bake.hcl.
+      - name: Read the Node version
+        id: node
+        run: |
+          version=$(sed -nE 's/^variable "NODE_VERSION" \{ default = "([^"]+)" \}$/\1/p' docker/docker-bake.hcl)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image names
+        id: names
+        # GHCR names must be lowercase.
+        run: |
+          owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "n8n=ghcr.io/$owner/n8n" >> "$GITHUB_OUTPUT"
+          echo "runners=ghcr.io/$owner/runners" >> "$GITHUB_OUTPUT"
+        env:
+          OWNER: ${{ github.repository_owner }}
+
+      # A registry host in IMAGE_BASE_NAME makes dockerize push directly.
+      - name: Build and push
+        uses: ./.github/actions/setup-nodejs
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          build-command: pnpm build:docker
+        env:
+          IMAGE_BASE_NAME: ${{ steps.names.outputs.n8n }}
+          RUNNERS_IMAGE_BASE_NAME: ${{ steps.names.outputs.runners }}
+          IMAGE_TAG: latest
+
+      # An immutable tag per commit, so the VPS can roll back.
+      - name: Add commit tag
+        run: |
+          docker buildx imagetools create -t "$IMAGE:sha-${GITHUB_SHA::7}" "$IMAGE:latest"
+        env:
+          IMAGE: ${{ steps.names.outputs.n8n }}

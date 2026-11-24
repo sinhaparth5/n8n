@@ -603,3 +603,11 @@ allowBuilds:
   utf-8-validate: false
   v-code-diff: false
   vue-demi: false
+permissions:
+  '@n8n/instance-ai':
+    skills: [agent-builder, app-builder, data-table-manager, debugging-executions, instance-awareness, intent-recognition, n8n-docs-assistant, suggest-automations, v3-migration, workflow-builder]
+  agent-browser:
+    skills: true
+skills:
+  dirs:
+    - .claude/skills
