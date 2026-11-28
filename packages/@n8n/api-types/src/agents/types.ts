@@ -3,6 +3,7 @@ import { EXECUTE_WORKFLOW_TRIGGER_NODE_TYPE, getChildNodes, type IConnections } 
 import type { AgentApproval, AgentIntegrationSettings } from './agent-integration.schema';
 import type { AgentJsonConfig } from './agent-json-config.schema';
 import type { AgentPersonalisation } from './agent-personalisation';
+import type { AgentSkillReference } from './agent-skill.schema';
 import type { AgentBackgroundJobSignal } from './background-job';
 import type { ProviderAttachmentCapabilities } from './provider-capabilities';
 
@@ -165,6 +166,20 @@ export interface AgentIntegrationStatusEntry {
 	errorMessage?: string;
 }
 
+/**
+ * Who the agent is on a chat platform, for labels such as
+ * "Mention @AgentBot in Acme on Slack". Every field is optional: the label
+ * falls back to the platform name when the platform does not tell us.
+ */
+export interface AgentIntegrationAccountResponse {
+	/** The name that users mention, without the `@`. */
+	botName?: string;
+	/** The workspaces or servers where the bot is installed. */
+	workspaceNames?: string[];
+	/** True when the platform has more workspaces than `workspaceNames` lists. */
+	hasMoreWorkspaces?: boolean;
+}
+
 export interface AgentIntegrationDraftEntry {
 	type: string;
 	settings?: AgentIntegrationSettings;
@@ -220,11 +235,6 @@ export interface AgentWebhookUrlResponse {
 	url: string;
 }
 
-export interface AgentSkillReference {
-	path: string;
-	content: string;
-}
-
 export interface AgentSkill {
 	name: string;
 	description: string;
@@ -270,6 +280,10 @@ export interface AgentSkillMutationResponse {
 	skill: AgentSkill;
 	skillHash: string;
 	versionId: string | null;
+}
+
+export interface AgentSkillWorkflowAccessResponse {
+	outsideProjectWorkflowIds: string[];
 }
 
 export interface AgentVersionDto {
@@ -699,6 +713,11 @@ export interface AgentChatMessagesResponse {
 	nextCursor?: string | null;
 }
 
+/** Suggested starter prompts returned by the test-chat scenario generator. */
+export interface GenerateAgentTestScenariosResponse {
+	scenarios: string[];
+}
+
 /**
  * One agent as the n8n chat page lists it.
  *
@@ -742,6 +761,8 @@ export interface AgentN8nChatAgentDetails extends AgentChatListItem {
 export interface AgentN8nChatThreadSummary {
 	id: string;
 	title: string | null;
+	/** A short preview of the first user message. Lists show it until the thread has a title. */
+	firstMessage?: string | null;
 	updatedAt: string;
 	agent: {
 		id: string;
@@ -760,6 +781,8 @@ export interface AgentN8nChatThreadsResponse {
 export interface SystemAgentThreadSummary {
 	id: string;
 	title: string | null;
+	/** A short preview of the first user message. Lists show it until the thread has a title. */
+	firstMessage?: string | null;
 	updatedAt: string;
 	projectId: string;
 	/** The memory metadata of the thread, such as the agent that an Assistant thread builds. */

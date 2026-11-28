@@ -45,9 +45,11 @@ export class InstanceAiSkillsAdapterService {
 		user: User,
 		assistantSkillsEnabled: boolean,
 		skillSourcesEnabled = false,
+		workflowsInSkillsEnabled = false,
 	): InstanceAiSkillService {
 		return {
 			assistantSkillsEnabled,
+			workflowsInSkillsEnabled,
 			...(skillSourcesEnabled
 				? {
 						sources: {
@@ -111,6 +113,8 @@ export class InstanceAiSkillsAdapterService {
 						skillId,
 						SaveSkillDto.parse(input),
 						'assistant',
+						// The Assistant reads a binary file without its content, so it cannot send it back.
+						{ keepUnnamedBinaryFiles: true },
 					);
 				} catch (error) {
 					const refusal = await toSkillToolRefusal(error, {

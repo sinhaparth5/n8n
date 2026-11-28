@@ -8,13 +8,14 @@ import type { TelemetryProxy } from '@n8n/backend-services';
 import { User } from '@n8n/db';
 import { ConflictError } from '@n8n/errors';
 import { mock } from 'vitest-mock-extended';
+import type { z } from 'zod';
 
 import {
-	type AssistantSkillsFlagGate,
 	SkillNameTakenError,
 	type SkillService,
 	type SkillSourceService,
 	type SkillSyncFlagGate,
+	type WorkflowsInSkillsFlagGate,
 } from '@/modules/skills';
 import { SkillSourceRequestError, SkillSyncedError } from '@/modules/skills/testing';
 
@@ -83,15 +84,15 @@ describe('McpSkillToolsService', () => {
 	const user = Object.assign(new User(), { id: 'user-1' });
 	const telemetry = mock<TelemetryProxy>();
 	const skillService = mock<SkillService>();
-	const rollout = mock<AssistantSkillsFlagGate>();
 	const skillSources = mock<SkillSourceService>();
 	const skillSyncGate = mock<SkillSyncFlagGate>();
+	const workflowsInSkillsGate = mock<WorkflowsInSkillsFlagGate>();
 	const service = new McpSkillToolsService(
 		telemetry,
 		skillService,
-		rollout,
 		skillSources,
 		skillSyncGate,
+		workflowsInSkillsGate,
 	);
 	let tools: Map<string, Handler>;
 
@@ -103,7 +104,6 @@ describe('McpSkillToolsService', () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks();
-		rollout.isEnabled.mockResolvedValue(true);
 		skillSyncGate.isEnabled.mockResolvedValue(true);
 		tools = new Map();
 		const registerTool: RegisterToolFn = (tool) => {
@@ -159,28 +159,6 @@ describe('McpSkillToolsService', () => {
 		});
 	});
 
-	it('hides Assistant availability from MCP when its flag is off', async () => {
-		rollout.isEnabled.mockResolvedValue(false);
-		const registered: Array<Parameters<RegisterToolFn>[0]> = [];
-		await service.registerTools(
-			(tool) => {
-				registered.push(tool);
-				tools.set(tool.name, tool.handler as unknown as Handler);
-			},
-			user,
-			true,
-		);
-		for (const name of ['create_skill', 'update_skill']) {
-			expect(registered.find((tool) => tool.name === name)?.config.inputSchema).not.toHaveProperty(
-				'availableToAssistant',
-			);
-		}
-		skillService.get.mockResolvedValue(detail);
-		expect(
-			(await callTool('get_skill', { skillId: 'skill_a' })).structuredContent,
-		).not.toHaveProperty('availableToAssistant');
-	});
-
 	it('hides MCP availability when the MCP skills extension is off', async () => {
 		const registered: Array<Parameters<RegisterToolFn>[0]> = [];
 		await service.registerTools(
@@ -200,6 +178,41 @@ describe('McpSkillToolsService', () => {
 		expect(
 			(await callTool('get_skill', { skillId: 'skill_a' })).structuredContent,
 		).not.toHaveProperty('availableToMCP');
+	});
+
+	describe('workflow mention hint', () => {
+		const workflowMentionHint =
+			'To make a skill run an n8n workflow, link the workflow in the instructions as [Workflow name](n8n://workflow/<workflow-id>).';
+
+		async function instructionsDescriptions() {
+			const registered: Array<Parameters<RegisterToolFn>[0]> = [];
+			await service.registerTools((tool) => registered.push(tool), user, true);
+			const schemaOf = (name: string) =>
+				registered.find((tool) => tool.name === name)?.config.inputSchema as Record<
+					string,
+					z.ZodTypeAny
+				>;
+			const createSkill = schemaOf('create_skill').skill as z.AnyZodObject;
+			return {
+				create: createSkill.shape.instructions.description,
+				update: schemaOf('update_skill').instructions.description,
+			};
+		}
+
+		it('tells the client how to mention a workflow when the flag is on', async () => {
+			workflowsInSkillsGate.isEnabled.mockResolvedValue(true);
+
+			expect(await instructionsDescriptions()).toEqual({
+				create: workflowMentionHint,
+				update: workflowMentionHint,
+			});
+		});
+
+		it('says nothing about workflow mentions when the flag is off', async () => {
+			workflowsInSkillsGate.isEnabled.mockResolvedValue(false);
+
+			expect(await instructionsDescriptions()).toEqual({ create: undefined, update: undefined });
+		});
 	});
 
 	describe('search_n8n_skills', () => {
@@ -286,6 +299,97 @@ describe('McpSkillToolsService', () => {
 				usedBy: detail.usedBy,
 				availableToAssistant: true,
 				availableToMCP: true,
+			});
+		});
+
+		it('lists a binary file without its content', async () => {
+			skillService.get.mockResolvedValue({
+				...detail,
+				skill: {
+					...detail.skill,
+					references: [
+						{ path: 'assets/logo.png', content: 'AP8=', isBinary: true },
+						{ path: 'references/tone.md', content: 'Warm.' },
+					],
+				},
+			});
+
+			const result = await callTool('get_skill', { skillId: 'skill_a' });
+
+			expect((result.structuredContent as { skill: unknown }).skill).toEqual({
+				...detail.skill,
+				references: [
+					{ path: 'assets/logo.png', isBinary: true, characterCount: 4 },
+					{ path: 'references/tone.md', content: 'Warm.', characterCount: 5 },
+				],
+			});
+			expect(JSON.stringify(result)).not.toContain('AP8=');
+		});
+
+		it('refuses a referenceOffset without a referencePath as an error result', async () => {
+			const result = await callTool('get_skill', { skillId: 'skill_a', referenceOffset: 10 });
+
+			expect(result.isError).toBe(true);
+			expect(result.structuredContent).toEqual({
+				ok: false,
+				skillId: 'skill_a',
+				error: 'Pass referencePath with referenceOffset.',
+			});
+			expect(skillService.get).not.toHaveBeenCalled();
+		});
+
+		it('bounds reference content and reads omitted paths and the remaining parts on request', async () => {
+			const referencePath = 'reference/long.md';
+			const fullContent = `${'x'.repeat(50 * 1024)}Last part`;
+			skillService.get.mockResolvedValue({
+				...detail,
+				skill: {
+					...detail.skill,
+					references: [
+						{ path: referencePath, content: fullContent },
+						{ path: 'reference/other.md', content: 'Another guide' },
+					],
+				},
+			});
+
+			const initial = await callTool('get_skill', { skillId: 'skill_a' });
+			const firstRef = (
+				initial.structuredContent.skill as {
+					references: Array<{ content?: string; nextOffset?: number; contentTruncated?: boolean }>;
+				}
+			).references[0];
+			expect(firstRef.contentTruncated).toBe(true);
+			expect(firstRef.nextOffset).toBeGreaterThan(0);
+			expect(firstRef.content).toBe(fullContent.slice(0, firstRef.nextOffset));
+			expect(initial.structuredContent).toMatchObject({
+				omittedReferencePaths: ['reference/other.md'],
+			});
+			expect(JSON.stringify(initial.structuredContent)).not.toContain('Another guide');
+
+			const next = await callTool('get_skill', {
+				skillId: 'skill_a',
+				referencePath,
+				referenceOffset: firstRef.nextOffset,
+			});
+			expect(next.structuredContent).toMatchObject({
+				skill: {
+					references: [
+						{ path: referencePath, content: fullContent.slice(firstRef.nextOffset) },
+						{ path: 'reference/other.md' },
+					],
+				},
+			});
+			const omitted = await callTool('get_skill', {
+				skillId: 'skill_a',
+				referencePath: 'reference/other.md',
+			});
+			expect(omitted.structuredContent).toMatchObject({
+				skill: {
+					references: [
+						{ path: referencePath },
+						{ path: 'reference/other.md', content: 'Another guide' },
+					],
+				},
 			});
 		});
 
@@ -423,6 +527,8 @@ describe('McpSkillToolsService', () => {
 				'skill_a',
 				{ baseSkillHash: 'hash-2', instructions: 'Be kinder.', availableToAssistant: true },
 				'mcp',
+				// A client reads no binary content, so its update must not drop the binary files.
+				{ keepUnnamedBinaryFiles: true },
 			);
 			expect(result.structuredContent).toEqual({
 				id: 'skill_a',
@@ -447,6 +553,7 @@ describe('McpSkillToolsService', () => {
 				'skill_a',
 				{ baseSkillHash: 'hash-2', availableToMCP: true },
 				'mcp',
+				{ keepUnnamedBinaryFiles: true },
 			);
 		});
 

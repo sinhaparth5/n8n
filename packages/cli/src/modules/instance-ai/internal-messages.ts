@@ -1,4 +1,5 @@
 import {
+	APP_TOOL_NAME_BY_ACTION,
 	instanceAiAgentPreviewHandoffContextSchema,
 	instanceAiResourceAttachmentSchema,
 	type InstanceAiAgentPreviewHandoffContext,
@@ -63,6 +64,8 @@ export const PROJECT_CONTEXT_OPEN_TAG = '<project-context>';
 export const PROJECT_CONTEXT_CLOSE_TAG = '</project-context>';
 export const APP_TARGETS_OPEN_TAG = '<app-targets>';
 export const APP_TARGETS_CLOSE_TAG = '</app-targets>';
+export const MCP_SERVER_TARGET_OPEN_TAG = '<mcp-server-target>';
+export const MCP_SERVER_TARGET_CLOSE_TAG = '</mcp-server-target>';
 export const PAST_CONVERSATIONS_OPEN_TAG = '<past-conversations>';
 export const PAST_CONVERSATIONS_CLOSE_TAG = '</past-conversations>';
 /**
@@ -186,14 +189,28 @@ export function buildAppTargetsBlock(
 	if (apps.length === 0 && !hasPendingApp) return '';
 	return [
 		APP_TARGETS_OPEN_TAG,
-		'This conversation builds these n8n Apps. Load `app-builder` and pass the matching `appId` to the `apps` tool.',
+		`This conversation builds these n8n Apps. Load \`app-builder\` and pass the matching \`appId\` to the app tools, for example \`${APP_TOOL_NAME_BY_ACTION.open}\`.`,
 		...apps.map(({ id, name }) => `- App ${sanitisePromptText(name)} (appId: \`${id}\`)`),
 		...(hasPendingApp
 			? [
-					'- A new app that the user opened. It has no row yet. Create it with the `apps` tool action `create`.',
+					`- A new app that the user opened. It has no row yet. Create it with \`${APP_TOOL_NAME_BY_ACTION.create}\`.`,
 				]
 			: []),
 		APP_TARGETS_CLOSE_TAG,
+	].join('\n');
+}
+
+/** The custom MCP server of the page that hosts this conversation. */
+export function buildMcpServerTargetBlock(server: {
+	id: string;
+	projectId: string;
+	name: string;
+}): string {
+	return [
+		MCP_SERVER_TARGET_OPEN_TAG,
+		`This conversation works on the custom MCP server ${sanitisePromptText(server.name)} (serverId: \`${server.id}\`, projectId: \`${server.projectId}\`). The user sees the server page beside this chat, and each change shows there at once.`,
+		'Pass this `serverId` and `projectId` to the `custom-mcp-servers` tool, unless the user names another server.',
+		MCP_SERVER_TARGET_CLOSE_TAG,
 	].join('\n');
 }
 
